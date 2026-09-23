@@ -1,0 +1,680 @@
+<meta name='viewport' content='width=device-width, initial-scale=1'/><!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+
+<title>AI Vision Detector</title>
+
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3"></script>
+
+<style>
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    background: #0b0b0f;
+    color: white;
+    font-family: Arial, sans-serif;
+    text-align: center;
+}
+
+h2 {
+    margin: 18px;
+}
+
+.controls {
+    margin: 15px;
+}
+
+button,
+.fileButton {
+    display: inline-block;
+    padding: 11px 18px;
+    margin: 5px;
+    border: 0;
+    border-radius: 8px;
+    background: #292933;
+    color: white;
+    cursor: pointer;
+}
+
+button:hover,
+.fileButton:hover {
+    background: #3a3a46;
+}
+
+input {
+    display: none;
+}
+
+#stage {
+    position: relative;
+    display: inline-block;
+    max-width: 95vw;
+}
+
+#media {
+    display: block;
+    max-width: 95vw;
+    max-height: 75vh;
+    border-radius: 10px;
+}
+
+#canvas {
+    position: absolute;
+    left: 0;
+    top: 0;
+    pointer-events: none;
+}
+
+#status {
+    margin: 12px;
+    color: #aaa;
+}
+
+#backend {
+    font-size: 13px;
+    color: #777;
+}
+</style>
+</head>
+
+<body>
+
+<h2>AI Vision Detector</h2>
+
+<div class="controls">
+
+    <label class="fileButton">
+        📷 Insert Photo
+        <input
+            id="photoInput"
+            type="file"
+            accept="image/*">
+    </label>
+
+    <label class="fileButton">
+        🎥 Insert Video
+        <input
+            id="videoInput"
+            type="file"
+            accept="video/*">
+    </label>
+
+    <button id="cameraButton">
+        📡 Camera
+    </button>
+
+    <button id="stopButton">
+        Stop
+    </button>
+
+</div>
+
+<div id="stage">
+
+    <video
+        id="media"
+        autoplay
+        muted
+        playsinline>
+    </video>
+
+    <canvas id="canvas"></canvas>
+
+</div>
+
+<div id="status">
+    Loading AI...
+</div>
+
+<div id="backend"></div>
+
+
+<script>
+
+const media =
+    document.getElementById("media");
+
+const canvas =
+    document.getElementById("canvas");
+
+const ctx =
+    canvas.getContext("2d");
+
+const status =
+    document.getElementById("status");
+
+const backend =
+    document.getElementById("backend");
+
+const photoInput =
+    document.getElementById("photoInput");
+
+const videoInput =
+    document.getElementById("videoInput");
+
+let model = null;
+let stream = null;
+let running = false;
+let busy = false;
+let imageMode = false;
+
+
+/*
+====================================================
+LOAD AI
+====================================================
+*/
+
+async function loadAI() {
+
+    try {
+
+        status.textContent =
+            "Starting TensorFlow...";
+
+        /*
+         * CPU backend avoids WebGL shader errors.
+         */
+
+        await tf.setBackend("cpu");
+
+        await tf.ready();
+
+        backend.textContent =
+            "Backend: " + tf.getBackend();
+
+        status.textContent =
+            "Loading AI model...";
+
+        model = await cocoSsd.load({
+            base: "lite_mobilenet_v2"
+        });
+
+        status.textContent =
+            "AI ready.";
+
+    } catch (error) {
+
+        console.error(error);
+
+        status.textContent =
+            "AI error: " + error.message;
+    }
+}
+
+
+/*
+====================================================
+CANVAS SIZE
+====================================================
+*/
+
+function resizeCanvas() {
+
+    canvas.width =
+        media.videoWidth ||
+        media.naturalWidth;
+
+    canvas.height =
+        media.videoHeight ||
+        media.naturalHeight;
+}
+
+
+/*
+====================================================
+DRAW DETECTIONS
+====================================================
+*/
+
+function draw(predictions) {
+
+    ctx.clearRect(
+        0,
+        0,
+        canvas.width,
+        canvas.height
+    );
+
+    let count = 0;
+
+    for (const prediction of predictions) {
+
+        /*
+         * COCO-SSD detects many object types.
+         *
+         * We display people here.
+         */
+
+        if (prediction.class !== "person")
+            continue;
+
+        count++;
+
+        const [
+            x,
+            y,
+            width,
+            height
+        ] = prediction.bbox;
+
+        const centerX =
+            x + width / 2;
+
+        const centerY =
+            y + height / 2;
+
+        const confidence =
+            Math.round(
+                prediction.score * 100
+            );
+
+
+        /*
+         * Detection box
+         */
+
+        ctx.strokeStyle =
+            "#00ff66";
+
+        ctx.lineWidth = 3;
+
+        ctx.strokeRect(
+            x,
+            y,
+            width,
+            height
+        );
+
+
+        /*
+         * Center point
+         */
+
+        ctx.fillStyle =
+            "#00ff66";
+
+        ctx.beginPath();
+
+        ctx.arc(
+            centerX,
+            centerY,
+            5,
+            0,
+            Math.PI * 2
+        );
+
+        ctx.fill();
+
+
+        /*
+         * Label
+         */
+
+        ctx.font =
+            "16px Arial";
+
+        ctx.fillStyle =
+            "#00ff66";
+
+        ctx.fillText(
+            `PERSON ${confidence}%`,
+            x,
+            Math.max(
+                18,
+                y - 8
+            )
+        );
+
+
+        /*
+         * Position
+         */
+
+        ctx.fillText(
+            `X:${Math.round(centerX)} Y:${Math.round(centerY)}`,
+            x,
+            Math.min(
+                canvas.height - 8,
+                y + height + 18
+            )
+        );
+    }
+
+    status.textContent =
+        `AI detected ${count} person(s)`;
+}
+
+
+/*
+====================================================
+PHOTO
+====================================================
+*/
+
+photoInput.addEventListener(
+    "change",
+    async event => {
+
+        const file =
+            event.target.files[0];
+
+        if (!file || !model)
+            return;
+
+        stopCamera();
+
+        imageMode = true;
+
+        const img =
+            new Image();
+
+        img.onload = async () => {
+
+            media.style.display =
+                "none";
+
+            canvas.style.position =
+                "static";
+
+            canvas.width =
+                img.naturalWidth;
+
+            canvas.height =
+                img.naturalHeight;
+
+            canvas.style.maxWidth =
+                "95vw";
+
+            canvas.style.maxHeight =
+                "75vh";
+
+            ctx.drawImage(
+                img,
+                0,
+                0,
+                canvas.width,
+                canvas.height
+            );
+
+            status.textContent =
+                "AI analyzing photo...";
+
+            try {
+
+                const predictions =
+                    await model.detect(img);
+
+                /*
+                 * Redraw the original image
+                 * before adding detections.
+                 */
+
+                ctx.drawImage(
+                    img,
+                    0,
+                    0,
+                    canvas.width,
+                    canvas.height
+                );
+
+                draw(predictions);
+
+            } catch (error) {
+
+                status.textContent =
+                    "Detection error: " +
+                    error.message;
+            }
+        };
+
+        img.src =
+            URL.createObjectURL(file);
+    }
+);
+
+
+/*
+====================================================
+VIDEO FILE
+====================================================
+*/
+
+videoInput.addEventListener(
+    "change",
+    event => {
+
+        const file =
+            event.target.files[0];
+
+        if (!file || !model)
+            return;
+
+        stopCamera();
+
+        imageMode = false;
+
+        canvas.style.position =
+            "absolute";
+
+        canvas.style.maxWidth = "";
+        canvas.style.maxHeight = "";
+
+        media.style.display =
+            "block";
+
+        media.src =
+            URL.createObjectURL(file);
+
+        media.loop = true;
+
+        media.onloadedmetadata =
+            async () => {
+
+                resizeCanvas();
+
+                await media.play();
+
+                running = true;
+
+                detectVideo();
+            };
+    }
+);
+
+
+/*
+====================================================
+VIDEO AI LOOP
+====================================================
+*/
+
+async function detectVideo() {
+
+    if (!running || !model)
+        return;
+
+    if (busy) {
+
+        requestAnimationFrame(
+            detectVideo
+        );
+
+        return;
+    }
+
+    if (media.readyState < 2) {
+
+        requestAnimationFrame(
+            detectVideo
+        );
+
+        return;
+    }
+
+    busy = true;
+
+    try {
+
+        const predictions =
+            await model.detect(media);
+
+        draw(predictions);
+
+    } catch (error) {
+
+        console.error(error);
+
+    }
+
+    busy = false;
+
+    if (running)
+        requestAnimationFrame(
+            detectVideo
+        );
+}
+
+
+/*
+====================================================
+CAMERA
+====================================================
+*/
+
+async function startCamera() {
+
+    if (!model) {
+
+        status.textContent =
+            "AI is still loading.";
+
+        return;
+    }
+
+    try {
+
+        stopCamera();
+
+        imageMode = false;
+
+        media.style.display =
+            "block";
+
+        canvas.style.position =
+            "absolute";
+
+        stream =
+            await navigator.mediaDevices
+                .getUserMedia({
+
+                    video: {
+                        width: {
+                            ideal: 1280
+                        },
+
+                        height: {
+                            ideal: 720
+                        }
+                    },
+
+                    audio: false
+                });
+
+        media.srcObject =
+            stream;
+
+        media.onloadedmetadata =
+            async () => {
+
+                resizeCanvas();
+
+                await media.play();
+
+                running = true;
+
+                detectVideo();
+            };
+
+    } catch (error) {
+
+        status.textContent =
+            "Camera error: " +
+            error.message;
+    }
+}
+
+
+/*
+====================================================
+STOP
+====================================================
+*/
+
+function stopCamera() {
+
+    running = false;
+
+    if (stream) {
+
+        stream
+            .getTracks()
+            .forEach(track =>
+                track.stop()
+            );
+
+        stream = null;
+    }
+
+    if (media.srcObject) {
+        media.srcObject = null;
+    }
+
+    ctx.clearRect(
+        0,
+        0,
+        canvas.width,
+        canvas.height
+    );
+}
+
+
+/*
+====================================================
+BUTTONS
+====================================================
+*/
+
+document
+    .getElementById("cameraButton")
+    .addEventListener(
+        "click",
+        startCamera
+    );
+
+document
+    .getElementById("stopButton")
+    .addEventListener(
+        "click",
+        stopCamera
+    );
+
+
+/*
+====================================================
+START
+====================================================
+*/
+
+loadAI();
+
+</script>
+
+</body>
+</html>
