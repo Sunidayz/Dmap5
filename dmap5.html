@@ -1,0 +1,888 @@
+<meta name='viewport' content='width=device-width, initial-scale=1'/><!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+
+<title>Fast AI Vision Detector</title>
+
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3"></script>
+
+<style>
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    padding: 15px;
+    background: #111;
+    color: white;
+    font-family: Arial, sans-serif;
+    text-align: center;
+}
+
+h2 {
+    margin: 5px 0 12px;
+}
+
+.controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: center;
+    margin-bottom: 12px;
+}
+
+button,
+label {
+    background: #222;
+    border: 1px solid #444;
+    color: white;
+    padding: 10px 13px;
+    border-radius: 8px;
+    cursor: pointer;
+}
+
+button:hover,
+label:hover {
+    background: #333;
+}
+
+input {
+    display: none;
+}
+
+#stage {
+    position: relative;
+    width: 100%;
+    max-width: 1100px;
+    margin: auto;
+    background: black;
+    overflow: hidden;
+    border-radius: 10px;
+}
+
+#video {
+    display: block;
+    width: 100%;
+    height: auto;
+}
+
+#overlay {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+}
+
+#status {
+    margin-top: 10px;
+    color: #0f0;
+}
+
+#info {
+    margin-top: 5px;
+    color: #aaa;
+    font-size: 14px;
+}
+</style>
+</head>
+
+<body>
+
+<h2>⚡ Fast AI Vision Detector</h2>
+
+<div class="controls">
+
+<button id="screenButton">
+🖥️ Share Screen
+</button>
+
+<button id="cameraButton">
+📷 Camera
+</button>
+
+<label>
+🖼️ Photo
+<input id="photoInput" type="file" accept="image/*">
+</label>
+
+<label>
+🎥 Video
+<input id="videoInput" type="file" accept="video/*">
+</label>
+
+<button id="stopButton">
+⛔ Stop
+</button>
+
+</div>
+
+<div id="stage">
+
+<video
+    id="video"
+    autoplay
+    muted
+    playsinline
+></video>
+
+<canvas id="overlay"></canvas>
+
+</div>
+
+<div id="status">
+Loading AI...
+</div>
+
+<div id="info"></div>
+
+
+<script>
+
+const video = document.getElementById("video");
+const canvas = document.getElementById("overlay");
+const ctx = canvas.getContext("2d");
+
+const status = document.getElementById("status");
+const info = document.getElementById("info");
+
+const screenButton = document.getElementById("screenButton");
+const cameraButton = document.getElementById("cameraButton");
+const stopButton = document.getElementById("stopButton");
+
+const photoInput = document.getElementById("photoInput");
+const videoInput = document.getElementById("videoInput");
+
+
+let model = null;
+let stream = null;
+
+let running = false;
+let processing = false;
+
+let lastDetectionTime = 0;
+
+/*
+    Lower = faster
+    Higher = more accurate
+*/
+const DETECTION_INTERVAL = 120;
+
+
+/*
+    AI analyzes this smaller resolution.
+
+    The actual video remains full resolution.
+*/
+const AI_WIDTH = 640;
+
+
+/* =========================
+   LOAD AI
+========================= */
+
+async function loadAI() {
+
+    try {
+
+        status.textContent = "⚡ Starting AI...";
+
+        /*
+            Try WebGL first.
+            It is normally much faster than CPU.
+        */
+
+        try {
+
+            await tf.setBackend("webgl");
+            await tf.ready();
+
+            status.textContent =
+                "⚡ Loading AI using WebGL...";
+
+        } catch {
+
+            await tf.setBackend("cpu");
+            await tf.ready();
+
+            status.textContent =
+                "⚠️ WebGL unavailable -- using CPU";
+
+        }
+
+        model = await cocoSsd.load({
+            base: "lite_mobilenet_v2"
+        });
+
+        status.textContent =
+            "✅ AI ready";
+
+        info.textContent =
+            "Backend: " + tf.getBackend();
+
+    } catch (error) {
+
+        console.error(error);
+
+        status.textContent =
+            "❌ AI failed to load";
+
+        info.textContent =
+            error.message;
+
+    }
+
+}
+
+
+/* =========================
+   CANVAS
+========================= */
+
+function resizeCanvas() {
+
+    if (!video.videoWidth || !video.videoHeight)
+        return;
+
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+}
+
+
+/* =========================
+   STOP EVERYTHING
+========================= */
+
+function stopEverything() {
+
+    running = false;
+    processing = false;
+
+    if (stream) {
+
+        stream.getTracks().forEach(track => {
+            track.stop();
+        });
+
+        stream = null;
+    }
+
+    video.pause();
+
+    video.srcObject = null;
+
+    ctx.clearRect(
+        0,
+        0,
+        canvas.width,
+        canvas.height
+    );
+
+    status.textContent = "⛔ Stopped";
+
+    info.textContent = "";
+
+}
+
+
+/* =========================
+   SCREEN SHARE
+========================= */
+
+async function shareScreen() {
+
+    if (!model) {
+
+        status.textContent =
+            "Please wait for AI to load.";
+
+        return;
+    }
+
+    stopEverything();
+
+    try {
+
+        stream =
+            await navigator.mediaDevices.getDisplayMedia({
+
+                video: {
+                    frameRate: {
+                        ideal: 30,
+                        max: 60
+                    }
+                },
+
+                audio: false
+
+            });
+
+        video.srcObject = stream;
+
+        await video.play();
+
+        resizeCanvas();
+
+        running = true;
+
+        status.textContent =
+            "🖥️ Screen detection running";
+
+        const track =
+            stream.getVideoTracks()[0];
+
+        track.addEventListener(
+            "ended",
+            stopEverything
+        );
+
+        detectLoop();
+
+    } catch (error) {
+
+        console.error(error);
+
+        status.textContent =
+            "❌ Screen sharing cancelled";
+
+    }
+
+}
+
+
+/* =========================
+   CAMERA
+========================= */
+
+async function startCamera() {
+
+    if (!model) {
+
+        status.textContent =
+            "Please wait for AI to load.";
+
+        return;
+    }
+
+    stopEverything();
+
+    try {
+
+        stream =
+            await navigator.mediaDevices.getUserMedia({
+
+                video: {
+                    width: {
+                        ideal: 1280
+                    },
+
+                    height: {
+                        ideal: 720
+                    },
+
+                    frameRate: {
+                        ideal: 30
+                    }
+                },
+
+                audio: false
+
+            });
+
+        video.srcObject = stream;
+
+        await video.play();
+
+        resizeCanvas();
+
+        running = true;
+
+        status.textContent =
+            "📷 Camera detection running";
+
+        detectLoop();
+
+    } catch (error) {
+
+        console.error(error);
+
+        status.textContent =
+            "❌ Camera unavailable";
+
+        info.textContent =
+            error.message;
+
+    }
+
+}
+
+
+/* =========================
+   FAST DETECTION LOOP
+========================= */
+
+async function detectLoop() {
+
+    if (!running)
+        return;
+
+    const now = performance.now();
+
+    /*
+        Don't run AI too frequently.
+    */
+
+    if (
+        processing ||
+        now - lastDetectionTime < DETECTION_INTERVAL
+    ) {
+
+        requestAnimationFrame(detectLoop);
+
+        return;
+    }
+
+    if (
+        video.readyState < 2 ||
+        video.videoWidth === 0
+    ) {
+
+        requestAnimationFrame(detectLoop);
+
+        return;
+    }
+
+    processing = true;
+    lastDetectionTime = now;
+
+    try {
+
+        /*
+            COCO-SSD automatically receives the
+            video frame.
+
+            maxNumBoxes keeps the workload smaller.
+        */
+
+        const predictions =
+            await model.detect(
+                video,
+                10,
+                0.45
+            );
+
+        drawDetections(predictions);
+
+    } catch (error) {
+
+        console.error(error);
+
+    }
+
+    processing = false;
+
+    if (running)
+        requestAnimationFrame(detectLoop);
+
+}
+
+
+/* =========================
+   DRAW DETECTIONS
+========================= */
+
+function drawDetections(predictions) {
+
+    ctx.clearRect(
+        0,
+        0,
+        canvas.width,
+        canvas.height
+    );
+
+    let people = 0;
+
+    const scaleX =
+        canvas.width / video.videoWidth;
+
+    const scaleY =
+        canvas.height / video.videoHeight;
+
+
+    for (const prediction of predictions) {
+
+        /*
+            Only draw people.
+
+            This reduces visual clutter and
+            processing of unwanted detections.
+        */
+
+        if (prediction.class !== "person")
+            continue;
+
+        people++;
+
+        const [
+            x,
+            y,
+            width,
+            height
+        ] = prediction.bbox;
+
+
+        const bx = x * scaleX;
+        const by = y * scaleY;
+        const bw = width * scaleX;
+        const bh = height * scaleY;
+
+
+        /*
+            Green detection box
+        */
+
+        ctx.strokeStyle = "#00ff00";
+        ctx.lineWidth = 3;
+
+        ctx.strokeRect(
+            bx,
+            by,
+            bw,
+            bh
+        );
+
+
+        /*
+            Center point
+        */
+
+        const centerX =
+            bx + bw / 2;
+
+        const centerY =
+            by + bh / 2;
+
+
+        ctx.beginPath();
+
+        ctx.arc(
+            centerX,
+            centerY,
+            5,
+            0,
+            Math.PI * 2
+        );
+
+        ctx.fillStyle = "#00ff00";
+        ctx.fill();
+
+
+        /*
+            Label
+        */
+
+        const confidence =
+            Math.round(
+                prediction.score * 100
+            );
+
+
+        ctx.fillStyle = "#00ff00";
+
+        ctx.font =
+            "bold 16px Arial";
+
+
+        ctx.fillText(
+
+            `person ${confidence}%`,
+
+            bx,
+
+            Math.max(
+                18,
+                by - 7
+            )
+
+        );
+
+
+        /*
+            Coordinates
+        */
+
+        ctx.font =
+            "13px Arial";
+
+        ctx.fillText(
+
+            `${Math.round(centerX)}, ${Math.round(centerY)}`,
+
+            bx,
+
+            by + bh + 17
+
+        );
+
+    }
+
+
+    info.textContent =
+        `People detected: ${people} | ` +
+        `AI backend: ${tf.getBackend()}`;
+
+}
+
+
+/* =========================
+   PHOTO
+========================= */
+
+photoInput.addEventListener(
+    "change",
+    async event => {
+
+        const file =
+            event.target.files[0];
+
+        if (!file || !model)
+            return;
+
+        stopEverything();
+
+        const image =
+            new Image();
+
+        image.onload = async () => {
+
+            canvas.width =
+                image.naturalWidth;
+
+            canvas.height =
+                image.naturalHeight;
+
+
+            /*
+                Put image temporarily into video
+                display area.
+            */
+
+            video.style.display = "none";
+
+            ctx.drawImage(
+                image,
+                0,
+                0
+            );
+
+
+            const predictions =
+                await model.detect(
+                    image,
+                    10,
+                    0.45
+                );
+
+
+            drawImageDetections(
+                predictions
+            );
+
+
+            URL.revokeObjectURL(
+                image.src
+            );
+
+        };
+
+
+        image.src =
+            URL.createObjectURL(file);
+
+        status.textContent =
+            "🖼️ Analyzing photo...";
+
+    }
+);
+
+
+/* =========================
+   PHOTO BOX DRAWING
+========================= */
+
+function drawImageDetections(
+    predictions
+) {
+
+    ctx.clearRect(
+        0,
+        0,
+        canvas.width,
+        canvas.height
+    );
+
+    let people = 0;
+
+
+    for (const prediction of predictions) {
+
+        if (prediction.class !== "person")
+            continue;
+
+        people++;
+
+
+        const [
+            x,
+            y,
+            width,
+            height
+        ] = prediction.bbox;
+
+
+        ctx.strokeStyle =
+            "#00ff00";
+
+        ctx.lineWidth = 3;
+
+        ctx.strokeRect(
+            x,
+            y,
+            width,
+            height
+        );
+
+
+        const cx =
+            x + width / 2;
+
+        const cy =
+            y + height / 2;
+
+
+        ctx.beginPath();
+
+        ctx.arc(
+            cx,
+            cy,
+            5,
+            0,
+            Math.PI * 2
+        );
+
+        ctx.fillStyle =
+            "#00ff00";
+
+        ctx.fill();
+
+
+        ctx.fillStyle =
+            "#00ff00";
+
+        ctx.font =
+            "bold 16px Arial";
+
+
+        ctx.fillText(
+
+            `person ${Math.round(
+                prediction.score * 100
+            )}%`,
+
+            x,
+            Math.max(
+                18,
+                y - 7
+            )
+
+        );
+
+    }
+
+
+    status.textContent =
+        `✅ ${people} person(s) detected`;
+
+}
+
+
+/* =========================
+   VIDEO FILE
+========================= */
+
+videoInput.addEventListener(
+    "change",
+    async event => {
+
+        const file =
+            event.target.files[0];
+
+        if (!file || !model)
+            return;
+
+        stopEverything();
+
+        video.style.display =
+            "block";
+
+        video.src =
+            URL.createObjectURL(file);
+
+        video.muted = true;
+
+        video.loop = true;
+
+        await video.play();
+
+        resizeCanvas();
+
+        running = true;
+
+        status.textContent =
+            "🎥 Video detection running";
+
+        detectLoop();
+
+    }
+);
+
+
+/* =========================
+   BUTTONS
+========================= */
+
+screenButton.onclick =
+    shareScreen;
+
+cameraButton.onclick =
+    startCamera;
+
+stopButton.onclick =
+    stopEverything;
+
+
+/* =========================
+   RESIZE
+========================= */
+
+window.addEventListener(
+    "resize",
+    resizeCanvas
+);
+
+
+/* =========================
+   START
+========================= */
+
+loadAI();
+
+</script>
+
+</body>
+</html>
