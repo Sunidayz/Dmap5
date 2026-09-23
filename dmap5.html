@@ -1,4 +1,4 @@
-<meta name='viewport' content='width=device-width, initial-scale=1'/><!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -45,7 +45,12 @@ label {
     cursor: pointer;
 }
 
-button:hover,
+button:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+button:hover:not(:disabled),
 label:hover {
     background: #333;
 }
@@ -81,7 +86,8 @@ input {
 
 #status {
     margin-top: 10px;
-    color: #0f0;
+    color: #00ff00;
+    font-weight: bold;
 }
 
 #info {
@@ -98,11 +104,11 @@ input {
 
 <div class="controls">
 
-<button id="screenButton">
+<button id="screenButton" disabled>
 🖥️ Share Screen
 </button>
 
-<button id="cameraButton">
+<button id="cameraButton" disabled>
 📷 Camera
 </button>
 
@@ -128,15 +134,15 @@ input {
     id="video"
     autoplay
     muted
-    playsinline
-></video>
+    playsinline>
+</video>
 
 <canvas id="overlay"></canvas>
 
 </div>
 
 <div id="status">
-Loading AI...
+⏳ Loading AI...
 </div>
 
 <div id="info"></div>
@@ -144,19 +150,35 @@ Loading AI...
 
 <script>
 
-const video = document.getElementById("video");
-const canvas = document.getElementById("overlay");
-const ctx = canvas.getContext("2d");
+const video =
+    document.getElementById("video");
 
-const status = document.getElementById("status");
-const info = document.getElementById("info");
+const canvas =
+    document.getElementById("overlay");
 
-const screenButton = document.getElementById("screenButton");
-const cameraButton = document.getElementById("cameraButton");
-const stopButton = document.getElementById("stopButton");
+const ctx =
+    canvas.getContext("2d");
 
-const photoInput = document.getElementById("photoInput");
-const videoInput = document.getElementById("videoInput");
+const status =
+    document.getElementById("status");
+
+const info =
+    document.getElementById("info");
+
+const screenButton =
+    document.getElementById("screenButton");
+
+const cameraButton =
+    document.getElementById("cameraButton");
+
+const stopButton =
+    document.getElementById("stopButton");
+
+const photoInput =
+    document.getElementById("photoInput");
+
+const videoInput =
+    document.getElementById("videoInput");
 
 
 let model = null;
@@ -167,19 +189,15 @@ let processing = false;
 
 let lastDetectionTime = 0;
 
+
 /*
-    Lower = faster
-    Higher = more accurate
+    Faster detection interval.
+
+    Lower = more frequent detection.
+    Higher = less CPU usage.
 */
+
 const DETECTION_INTERVAL = 120;
-
-
-/*
-    AI analyzes this smaller resolution.
-
-    The actual video remains full resolution.
-*/
-const AI_WIDTH = 640;
 
 
 /* =========================
@@ -190,40 +208,55 @@ async function loadAI() {
 
     try {
 
-        status.textContent = "⚡ Starting AI...";
+        status.textContent =
+            "⏳ Loading AI...";
+
+        info.textContent =
+            "Starting TensorFlow.js CPU engine...";
+
 
         /*
-            Try WebGL first.
-            It is normally much faster than CPU.
+            IMPORTANT:
+
+            We intentionally DO NOT use WebGL.
+
+            This prevents the WebGL initialization
+            from getting stuck on some devices.
         */
 
-        try {
+        await tf.setBackend("cpu");
 
-            await tf.setBackend("webgl");
-            await tf.ready();
+        await tf.ready();
 
-            status.textContent =
-                "⚡ Loading AI using WebGL...";
 
-        } catch {
+        info.textContent =
+            "Loading object detection model...";
 
-            await tf.setBackend("cpu");
-            await tf.ready();
-
-            status.textContent =
-                "⚠️ WebGL unavailable -- using CPU";
-
-        }
 
         model = await cocoSsd.load({
             base: "lite_mobilenet_v2"
         });
 
+
+        /*
+            AI is now ready.
+        */
+
         status.textContent =
-            "✅ AI ready";
+            "🟢 AI READY";
 
         info.textContent =
-            "Backend: " + tf.getBackend();
+            "CPU detection enabled";
+
+
+        /*
+            Enable the buttons only after
+            the model has successfully loaded.
+        */
+
+        screenButton.disabled = false;
+        cameraButton.disabled = false;
+
 
     } catch (error) {
 
@@ -241,21 +274,29 @@ async function loadAI() {
 
 
 /* =========================
-   CANVAS
+   RESIZE CANVAS
 ========================= */
 
 function resizeCanvas() {
 
-    if (!video.videoWidth || !video.videoHeight)
+    if (
+        !video.videoWidth ||
+        !video.videoHeight
+    ) {
         return;
+    }
 
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
+    canvas.width =
+        video.videoWidth;
+
+    canvas.height =
+        video.videoHeight;
+
 }
 
 
 /* =========================
-   STOP EVERYTHING
+   STOP
 ========================= */
 
 function stopEverything() {
@@ -263,18 +304,22 @@ function stopEverything() {
     running = false;
     processing = false;
 
+
     if (stream) {
 
-        stream.getTracks().forEach(track => {
-            track.stop();
-        });
+        stream
+            .getTracks()
+            .forEach(track => track.stop());
 
         stream = null;
+
     }
+
 
     video.pause();
 
     video.srcObject = null;
+
 
     ctx.clearRect(
         0,
@@ -283,9 +328,16 @@ function stopEverything() {
         canvas.height
     );
 
-    status.textContent = "⛔ Stopped";
 
-    info.textContent = "";
+    if (model) {
+
+        status.textContent =
+            "🟢 AI READY";
+
+        info.textContent =
+            "Waiting for a camera, screen or video";
+
+    }
 
 }
 
@@ -296,59 +348,67 @@ function stopEverything() {
 
 async function shareScreen() {
 
-    if (!model) {
-
-        status.textContent =
-            "Please wait for AI to load.";
-
-        return;
-    }
+    if (!model) return;
 
     stopEverything();
 
     try {
 
         stream =
-            await navigator.mediaDevices.getDisplayMedia({
+            await navigator.mediaDevices
+                .getDisplayMedia({
 
-                video: {
-                    frameRate: {
-                        ideal: 30,
-                        max: 60
-                    }
-                },
+                    video: {
+                        frameRate: {
+                            ideal: 30,
+                            max: 60
+                        }
+                    },
 
-                audio: false
+                    audio: false
 
-            });
+                });
 
-        video.srcObject = stream;
+
+        video.srcObject =
+            stream;
+
 
         await video.play();
 
+
         resizeCanvas();
+
 
         running = true;
 
+
         status.textContent =
-            "🖥️ Screen detection running";
+            "🟢 Screen detection active";
+
 
         const track =
             stream.getVideoTracks()[0];
+
 
         track.addEventListener(
             "ended",
             stopEverything
         );
 
+
         detectLoop();
+
 
     } catch (error) {
 
         console.error(error);
 
         status.textContent =
-            "❌ Screen sharing cancelled";
+            "🟢 AI READY";
+
+        info.textContent =
+            "Screen sharing cancelled";
 
     }
 
@@ -361,61 +421,64 @@ async function shareScreen() {
 
 async function startCamera() {
 
-    if (!model) {
-
-        status.textContent =
-            "Please wait for AI to load.";
-
-        return;
-    }
+    if (!model) return;
 
     stopEverything();
 
     try {
 
         stream =
-            await navigator.mediaDevices.getUserMedia({
+            await navigator.mediaDevices
+                .getUserMedia({
 
-                video: {
-                    width: {
-                        ideal: 1280
+                    video: {
+                        width: {
+                            ideal: 1280
+                        },
+
+                        height: {
+                            ideal: 720
+                        },
+
+                        frameRate: {
+                            ideal: 30
+                        }
                     },
 
-                    height: {
-                        ideal: 720
-                    },
+                    audio: false
 
-                    frameRate: {
-                        ideal: 30
-                    }
-                },
+                });
 
-                audio: false
 
-            });
+        video.srcObject =
+            stream;
 
-        video.srcObject = stream;
 
         await video.play();
 
+
         resizeCanvas();
+
 
         running = true;
 
+
         status.textContent =
-            "📷 Camera detection running";
+            "🟢 Camera detection active";
+
 
         detectLoop();
+
 
     } catch (error) {
 
         console.error(error);
 
         status.textContent =
-            "❌ Camera unavailable";
+            "🟢 AI READY";
 
         info.textContent =
-            error.message;
+            "Camera error: " + error.message;
 
     }
 
@@ -428,45 +491,58 @@ async function startCamera() {
 
 async function detectLoop() {
 
-    if (!running)
-        return;
+    if (!running) return;
 
-    const now = performance.now();
+
+    const now =
+        performance.now();
+
 
     /*
-        Don't run AI too frequently.
+        Don't start another AI prediction
+        while one is already running.
     */
 
     if (
         processing ||
-        now - lastDetectionTime < DETECTION_INTERVAL
+        now - lastDetectionTime <
+        DETECTION_INTERVAL
     ) {
 
-        requestAnimationFrame(detectLoop);
+        requestAnimationFrame(
+            detectLoop
+        );
 
         return;
+
     }
+
 
     if (
         video.readyState < 2 ||
         video.videoWidth === 0
     ) {
 
-        requestAnimationFrame(detectLoop);
+        requestAnimationFrame(
+            detectLoop
+        );
 
         return;
+
     }
 
+
     processing = true;
-    lastDetectionTime = now;
+
+    lastDetectionTime =
+        now;
+
 
     try {
 
         /*
-            COCO-SSD automatically receives the
-            video frame.
-
-            maxNumBoxes keeps the workload smaller.
+            Maximum 10 detections.
+            Confidence threshold = 45%.
         */
 
         const predictions =
@@ -476,7 +552,11 @@ async function detectLoop() {
                 0.45
             );
 
-        drawDetections(predictions);
+
+        drawDetections(
+            predictions
+        );
+
 
     } catch (error) {
 
@@ -484,10 +564,17 @@ async function detectLoop() {
 
     }
 
+
     processing = false;
 
-    if (running)
-        requestAnimationFrame(detectLoop);
+
+    if (running) {
+
+        requestAnimationFrame(
+            detectLoop
+        );
+
+    }
 
 }
 
@@ -496,7 +583,9 @@ async function detectLoop() {
    DRAW DETECTIONS
 ========================= */
 
-function drawDetections(predictions) {
+function drawDetections(
+    predictions
+) {
 
     ctx.clearRect(
         0,
@@ -505,28 +594,30 @@ function drawDetections(predictions) {
         canvas.height
     );
 
+
     let people = 0;
 
-    const scaleX =
-        canvas.width / video.videoWidth;
 
-    const scaleY =
-        canvas.height / video.videoHeight;
+    /*
+        Video and canvas have the same
+        internal dimensions, so coordinates
+        map directly.
+    */
 
+    for (
+        const prediction of predictions
+    ) {
 
-    for (const prediction of predictions) {
-
-        /*
-            Only draw people.
-
-            This reduces visual clutter and
-            processing of unwanted detections.
-        */
-
-        if (prediction.class !== "person")
+        if (
+            prediction.class !==
+            "person"
+        ) {
             continue;
+        }
+
 
         people++;
+
 
         const [
             x,
@@ -536,36 +627,33 @@ function drawDetections(predictions) {
         ] = prediction.bbox;
 
 
-        const bx = x * scaleX;
-        const by = y * scaleY;
-        const bw = width * scaleX;
-        const bh = height * scaleY;
-
-
         /*
-            Green detection box
+            Green box
         */
 
-        ctx.strokeStyle = "#00ff00";
+        ctx.strokeStyle =
+            "#00ff00";
+
         ctx.lineWidth = 3;
 
+
         ctx.strokeRect(
-            bx,
-            by,
-            bw,
-            bh
+            x,
+            y,
+            width,
+            height
         );
 
 
         /*
-            Center point
+            Center dot
         */
 
         const centerX =
-            bx + bw / 2;
+            x + width / 2;
 
         const centerY =
-            by + bh / 2;
+            y + height / 2;
 
 
         ctx.beginPath();
@@ -578,7 +666,9 @@ function drawDetections(predictions) {
             Math.PI * 2
         );
 
-        ctx.fillStyle = "#00ff00";
+        ctx.fillStyle =
+            "#00ff00";
+
         ctx.fill();
 
 
@@ -592,7 +682,8 @@ function drawDetections(predictions) {
             );
 
 
-        ctx.fillStyle = "#00ff00";
+        ctx.fillStyle =
+            "#00ff00";
 
         ctx.font =
             "bold 16px Arial";
@@ -602,11 +693,11 @@ function drawDetections(predictions) {
 
             `person ${confidence}%`,
 
-            bx,
+            x,
 
             Math.max(
                 18,
-                by - 7
+                y - 7
             )
 
         );
@@ -619,13 +710,14 @@ function drawDetections(predictions) {
         ctx.font =
             "13px Arial";
 
+
         ctx.fillText(
 
             `${Math.round(centerX)}, ${Math.round(centerY)}`,
 
-            bx,
+            x,
 
-            by + bh + 17
+            y + height + 17
 
         );
 
@@ -634,7 +726,7 @@ function drawDetections(predictions) {
 
     info.textContent =
         `People detected: ${people} | ` +
-        `AI backend: ${tf.getBackend()}`;
+        `Detection interval: ${DETECTION_INTERVAL}ms`;
 
 }
 
@@ -653,66 +745,64 @@ photoInput.addEventListener(
         if (!file || !model)
             return;
 
+
         stopEverything();
+
 
         const image =
             new Image();
 
-        image.onload = async () => {
 
-            canvas.width =
-                image.naturalWidth;
+        image.onload =
+            async () => {
 
-            canvas.height =
-                image.naturalHeight;
+                canvas.width =
+                    image.naturalWidth;
 
-
-            /*
-                Put image temporarily into video
-                display area.
-            */
-
-            video.style.display = "none";
-
-            ctx.drawImage(
-                image,
-                0,
-                0
-            );
+                canvas.height =
+                    image.naturalHeight;
 
 
-            const predictions =
-                await model.detect(
+                ctx.drawImage(
                     image,
-                    10,
-                    0.45
+                    0,
+                    0
                 );
 
 
-            drawImageDetections(
-                predictions
-            );
+                status.textContent =
+                    "🔍 Analyzing photo...";
 
 
-            URL.revokeObjectURL(
-                image.src
-            );
+                const predictions =
+                    await model.detect(
+                        image,
+                        10,
+                        0.45
+                    );
 
-        };
+
+                drawImageDetections(
+                    predictions
+                );
+
+
+                URL.revokeObjectURL(
+                    image.src
+                );
+
+            };
 
 
         image.src =
             URL.createObjectURL(file);
-
-        status.textContent =
-            "🖼️ Analyzing photo...";
 
     }
 );
 
 
 /* =========================
-   PHOTO BOX DRAWING
+   PHOTO DETECTIONS
 ========================= */
 
 function drawImageDetections(
@@ -726,13 +816,21 @@ function drawImageDetections(
         canvas.height
     );
 
+
     let people = 0;
 
 
-    for (const prediction of predictions) {
+    for (
+        const prediction of predictions
+    ) {
 
-        if (prediction.class !== "person")
+        if (
+            prediction.class !==
+            "person"
+        ) {
             continue;
+        }
+
 
         people++;
 
@@ -749,6 +847,7 @@ function drawImageDetections(
             "#00ff00";
 
         ctx.lineWidth = 3;
+
 
         ctx.strokeRect(
             x,
@@ -795,6 +894,7 @@ function drawImageDetections(
             )}%`,
 
             x,
+
             Math.max(
                 18,
                 y - 7
@@ -825,26 +925,31 @@ videoInput.addEventListener(
         if (!file || !model)
             return;
 
+
         stopEverything();
 
-        video.style.display =
-            "block";
 
         video.src =
             URL.createObjectURL(file);
+
 
         video.muted = true;
 
         video.loop = true;
 
+
         await video.play();
+
 
         resizeCanvas();
 
+
         running = true;
 
+
         status.textContent =
-            "🎥 Video detection running";
+            "🟢 Video detection active";
+
 
         detectLoop();
 
